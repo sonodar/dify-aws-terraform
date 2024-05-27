@@ -122,13 +122,15 @@ resource "aws_rds_cluster" "dify" {
   master_username = "postgres"
   master_password = var.db_master_password
 
-  # database_name                       = "dify"
+  # データベースは後から構築する
   # -- CREATE ROLE dify WITH LOGIN PASSWORD 'password';
   # -- GRANT dify TO postgres;
   # -- CREATE DATABASE dify WITH OWNER dify;
   # -- \c dify
   # -- CREATE EXTENSION vector;
-  # SQL をクエリエディタで実行する場合は有効にする
+
+  # 上記 SQL をマネジメントコンソールのクエリエディタで実行する場合は HTTP エンドポイントを有効にする。
+  # エンドポイントを有効にしない場合は踏み台インスタンスなどを用意して上記 SQL を実行する。
   enable_http_endpoint = true
 
   backup_retention_period  = 7
