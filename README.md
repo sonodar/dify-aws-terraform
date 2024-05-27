@@ -25,3 +25,5 @@ Terraform template for Dify on AWS
 7. Run `terraform apply -target aws_rds_cluster_instance.dify`
 8. Run `terraform apply -target aws_lb_listener_rule.api`
 9. Run `terraform apply`
+
+構築が完了し、ECS タスクがすべて起動したら Output の `dify_url` にアクセスしてください。
