@@ -858,7 +858,7 @@ resource "aws_security_group" "alb" {
   tags        = { Name = "dify-alb" }
 }
 
-resource "aws_security_group_rule" "alb_to_internet" {
+resource "aws_security_group_rule" "alb_to_targetgroup" {
   security_group_id = aws_security_group.alb.id
   type              = "egress"
   description       = "ALB to TargetGroup"
