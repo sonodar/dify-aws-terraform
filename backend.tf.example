@@ -1,0 +1,8 @@
+terraform {
+  backend "s3" {
+    region         = "ap-northeast-1"
+    bucket         = "dify-terraform-state"
+    key            = "dify.tfstate"
+    dynamodb_table = "dify-terraform-state-lock"
+  }
+}
