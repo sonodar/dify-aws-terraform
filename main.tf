@@ -27,7 +27,7 @@ resource "aws_security_group" "redis" {
   description = "Redis for Dify"
   vpc_id      = var.vpc_id
   tags        = { Name = "dify-redis" }
-  # ingress from api and worker
+  # API/Worker からの ingress を下の方で定義している
 }
 
 resource "aws_elasticache_subnet_group" "redis" {
@@ -56,17 +56,18 @@ resource "aws_elasticache_replication_group" "redis" {
   auth_token_update_strategy = "SET"
   auth_token                 = var.redis_password
 
+  # auth token を後から変更する場合（ROTATE して SET する）
   # REDIS_PASSWORD='put your redis password'
   # aws elasticache modify-replication-group \
-  # --replication-group-id dify \
-  # --auth-token ${REDIS_PASSWORD} \
-  # --auth-token-update-strategy ROTATE \
-  # --apply-immediately
+  #   --replication-group-id dify \
+  #   --auth-token ${REDIS_PASSWORD} \
+  #   --auth-token-update-strategy ROTATE \
+  #   --apply-immediately
   # aws elasticache modify-replication-group \
-  # --replication-group-id dify \
-  # --auth-token ${REDIS_PASSWORD} \
-  # --auth-token-update-strategy SET \
-  # --apply-immediately
+  #   --replication-group-id dify \
+  #   --auth-token ${REDIS_PASSWORD} \
+  #   --auth-token-update-strategy SET \
+  #   --apply-immediately
 
   maintenance_window       = "sat:18:00-sat:19:00"
   snapshot_window          = "20:00-21:00"
@@ -86,9 +87,11 @@ resource "aws_security_group" "database" {
   description = "PostgreSQL for Dify"
   vpc_id      = var.vpc_id
   tags        = { Name = "dify-db" }
-  # ingress from api and worke
+  # API/Worker からの ingress を下の方で定義している
 }
 
+# S3 バックアップなどでインターネットへのアクセスが必要な場合は egress を追加する。
+# VPC Endpoint や Managed Prefix List を使ってインターネットへのアクセスを制限するのがベター。
 resource "aws_security_group_rule" "database_to_internet" {
   security_group_id = aws_security_group.database.id
   type              = "egress"
@@ -230,9 +233,10 @@ resource "aws_iam_policy" "ecs_base" {
 
 # Log Group
 
+# ロググループは全コンテナ共通にしているが、運用を考えるとコンテナごとに分けた方がいいと思う。
 resource "aws_cloudwatch_log_group" "dify" {
   name              = "/dify/container-logs"
-  retention_in_days = 30 # FIXME: variable
+  retention_in_days = 30 # TODO: variable
 }
 
 # Dependencies for API + Sandbox and Worker task
@@ -241,6 +245,7 @@ locals {
   ssm_parameter_prefix = "/dify"
 }
 
+# セキュアにするなら Credentials は Terraform で管理しない方がいいと思う。
 resource "random_password" "sandbox_key" {
   length           = 42
   special          = true
@@ -286,10 +291,11 @@ resource "aws_ssm_parameter" "redis_password" {
   }
 }
 
-resource "aws_ssm_parameter" "redis_url" {
+# Broker URL はパスワードを含むためシークレットにする
+resource "aws_ssm_parameter" "broker_url" {
   depends_on = [aws_elasticache_replication_group.redis]
   type       = "SecureString"
-  name       = "${local.ssm_parameter_prefix}/REDIS_URL"
+  name       = "${local.ssm_parameter_prefix}/CELERY_BROKER_URL"
   value      = "rediss://:${var.redis_password}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0" # ElastiCache Redis では db0 以外使えない
   lifecycle {
     # ignore_changes = [value]
@@ -330,69 +336,14 @@ resource "aws_ecs_task_definition" "dify_api" {
   task_role_arn            = aws_iam_role.app.arn
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = 1024
-  memory                   = 2048
+  cpu                      = 1024 # TODO: variable
+  memory                   = 2048 # TODO: variable
 
   volume {
     name = "dependencies"
   }
 
   container_definitions = jsonencode([
-    {
-      name      = "dify-sandbox-dependencies"
-      image     = "busybox:latest"
-      essential = false
-      cpu       = 0
-      mountPoints = [
-        {
-          sourceVolume  = "dependencies"
-          containerPath = "/dependencies"
-        }
-      ]
-      entryPoint = ["sh", "-c"]
-      command    = ["touch /dependencies/python-requirements.txt && chmod 755 /dependencies/python-requirements.txt"]
-    },
-    {
-      name      = "dify-sandbox"
-      image     = "langgenius/dify-sandbox:${var.dify_sandbox_version}"
-      essential = true
-      mountPoints = [
-        {
-          sourceVolume  = "dependencies"
-          containerPath = "/dependencies"
-        }
-      ]
-      portMappings = [
-        {
-          hostPort      = 8194
-          protocol      = "tcp"
-          containerPort = 8194
-        }
-      ]
-      environment = [
-        for name, value in {
-          GIN_MODE       = "release"
-          WORKER_TIMEOUT = "15"
-          ENABLE_NETWORK = "true"
-        } : { name = name, value = tostring(value) }
-      ]
-      secrets = [
-        {
-          name      = "API_KEY"
-          valueFrom = aws_ssm_parameter.sandbox_key.name
-        }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.dify.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "dify-sandbox"
-        }
-      }
-      cpu         = 0
-      volumesFrom = []
-    },
     {
       name      = "dify-api"
       image     = "langgenius/dify-api:${var.dify_api_version}"
@@ -437,9 +388,9 @@ resource "aws_ecs_task_definition" "dify_api" {
           # It is consistent with the configuration in the 'redis' service below.
           REDIS_HOST    = aws_elasticache_replication_group.redis.primary_endpoint_address
           REDIS_PORT    = aws_elasticache_replication_group.redis.port
-          REDIS_USE_SSL = "true"
+          REDIS_USE_SSL = true
           # use redis db 0 for redis cache
-          REDIS_DB = "0"
+          REDIS_DB = 0
           # Specifies the allowed origins for cross-origin requests to the Web API, e.g. https://dify.app or * for all origins.
           WEB_API_CORS_ALLOW_ORIGINS = "*"
           # Specifies the allowed origins for cross-origin requests to the console API, e.g. https://cloud.dify.ai or * for all origins.
@@ -477,16 +428,16 @@ resource "aws_ecs_task_definition" "dify_api" {
           # SMTP_PASSWORD = ''
           # SMTP_USE_TLS = 'true'
           # The sandbox service endpoint.
-          CODE_EXECUTION_ENDPOINT       = "http://sandbox:8194"
+          CODE_EXECUTION_ENDPOINT       = "http://localhost:8194" # Fargate の task 内通信は localhost 宛
           CODE_MAX_NUMBER               = "9223372036854775807"
           CODE_MIN_NUMBER               = "-9223372036854775808"
-          CODE_MAX_STRING_LENGTH        = "80000"
-          TEMPLATE_TRANSFORM_MAX_LENGTH = "80000"
-          CODE_MAX_STRING_ARRAY_LENGTH  = "30"
-          CODE_MAX_OBJECT_ARRAY_LENGTH  = "30"
-          CODE_MAX_NUMBER_ARRAY_LENGTH  = "1000"
+          CODE_MAX_STRING_LENGTH        = 80000
+          TEMPLATE_TRANSFORM_MAX_LENGTH = 80000
+          CODE_MAX_STRING_ARRAY_LENGTH  = 30
+          CODE_MAX_OBJECT_ARRAY_LENGTH  = 30
+          CODE_MAX_NUMBER_ARRAY_LENGTH  = 1000
           # Indexing configuration
-          INDEXING_MAX_SEGMENTATION_TOKENS_LENGTH = "1000"
+          INDEXING_MAX_SEGMENTATION_TOKENS_LENGTH = 1000
         } : { name = name, value = tostring(value) }
       ]
       secrets = [
@@ -506,7 +457,7 @@ resource "aws_ecs_task_definition" "dify_api" {
         # Use redis as the broker, and redis db 1 for celery broker.
         {
           name      = "CELERY_BROKER_URL"
-          valueFrom = aws_ssm_parameter.redis_url.name
+          valueFrom = aws_ssm_parameter.broker_url.name
         },
         {
           name      = "PGVECTOR_PASSWORD"
@@ -536,6 +487,63 @@ resource "aws_ecs_task_definition" "dify_api" {
       volumesFrom = []
       mountPoints = []
     },
+    // `dify-sandbox:0.2.0` では `/dependencies/python-requirements.txt` が存在しないと起動時エラーになる。
+    // そのため、簡易的ではあるが volume を利用して sandbox から見れるファイルを作成する。
+    {
+      name      = "dify-sandbox-dependencies"
+      image     = "busybox:latest" # dify-sandbox イメージより軽量ならなんでもいい
+      essential = false
+      cpu       = 0
+      mountPoints = [
+        {
+          sourceVolume  = "dependencies"
+          containerPath = "/dependencies"
+        }
+      ]
+      entryPoint = ["sh", "-c"]
+      command    = ["touch /dependencies/python-requirements.txt && chmod 755 /dependencies/python-requirements.txt"]
+    },
+    {
+      name      = "dify-sandbox"
+      image     = "langgenius/dify-sandbox:${var.dify_sandbox_version}"
+      essential = true
+      mountPoints = [
+        {
+          sourceVolume  = "dependencies"
+          containerPath = "/dependencies"
+        }
+      ]
+      portMappings = [
+        {
+          hostPort      = 8194
+          protocol      = "tcp"
+          containerPort = 8194
+        }
+      ]
+      environment = [
+        for name, value in {
+          GIN_MODE       = "release"
+          WORKER_TIMEOUT = 15
+          ENABLE_NETWORK = true
+        } : { name = name, value = tostring(value) }
+      ]
+      secrets = [
+        {
+          name      = "API_KEY"
+          valueFrom = aws_ssm_parameter.sandbox_key.name
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.dify.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "dify-sandbox"
+        }
+      }
+      cpu         = 0
+      volumesFrom = []
+    },
   ])
 
   runtime_platform {
@@ -555,7 +563,8 @@ resource "aws_security_group" "api" {
   tags        = { Name = "dify-api" }
 }
 
-# TODO: SSRF Proxy
+# TODO: 公式では SSRF 対策のために Forward Proxy として squid をプロビジョニングしているが、
+# 本構成では SSRF 対策の Forward Proxy は省略している。必要な場合は squid のタスクを用意したり、Firewall Manager などを利用する。
 resource "aws_security_group_rule" "api_to_internet" {
   security_group_id = aws_security_group.api.id
   type              = "egress"
@@ -604,8 +613,8 @@ resource "aws_ecs_task_definition" "dify_worker" {
   task_role_arn            = aws_iam_role.app.arn
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = 1024
-  memory                   = 2048
+  cpu                      = 1024 # TODO: variable
+  memory                   = 2048 # TODO: variable
 
   container_definitions = jsonencode([
     {
@@ -674,7 +683,7 @@ resource "aws_ecs_task_definition" "dify_worker" {
         # Use redis as the broker, and redis db 1 for celery broker.
         {
           name      = "CELERY_BROKER_URL"
-          valueFrom = aws_ssm_parameter.redis_url.name
+          valueFrom = aws_ssm_parameter.broker_url.name
         },
         {
           name      = "PGVECTOR_PASSWORD"
@@ -760,8 +769,8 @@ resource "aws_ecs_task_definition" "dify_web" {
   task_role_arn            = aws_iam_role.web.arn
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = 1024
-  memory                   = 2048
+  cpu                      = 1024 # TODO: variable
+  memory                   = 2048 # TODO: variable
 
   container_definitions = jsonencode([
     {
@@ -818,6 +827,8 @@ resource "aws_security_group" "web" {
   tags        = { Name = "dify-web" }
 }
 
+# インターネットアクセスは不要だが、これがないと ECR からイメージのダウンロードに失敗して
+# タスクの起動がエラーになる。VPC エンドポイントを作成できるならそちらの方がベター。
 resource "aws_security_group_rule" "web_to_internet" {
   security_group_id = aws_security_group.web.id
   type              = "egress"
@@ -850,11 +861,11 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group_rule" "alb_to_internet" {
   security_group_id = aws_security_group.alb.id
   type              = "egress"
-  description       = "ALB to Internet"
-  protocol          = "all"
+  description       = "ALB to TargetGroup"
+  protocol          = "tcp"
   from_port         = 0
   to_port           = 0
-  cidr_blocks       = ["0.0.0.0/0"]
+  cidr_blocks       = [data.aws_vpc.this.cidr_block]
 }
 
 resource "aws_security_group_rule" "http_from_internet" {
@@ -887,7 +898,7 @@ resource "aws_lb_target_group" "web" {
   deregistration_delay = 65
 
   health_check {
-    path     = "/apps"
+    path     = "/apps" # "/" だと 307 になる
     interval = 10
     # timeout             = 5
     # healthy_threshold   = 3
@@ -916,6 +927,22 @@ locals {
 resource "aws_lb_listener_rule" "api" {
   listener_arn = aws_lb_listener.http.arn
   priority     = 10
+
+  condition {
+    path_pattern {
+      values = local.api_paths
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "api_wildcard" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 11
 
   condition {
     path_pattern {
@@ -957,6 +984,7 @@ resource "aws_ecs_cluster" "dify" {
     value = "enabled"
   }
 }
+// AutoScaling などで FARGATE_SPOT を使う場合は追加しておく
 resource "aws_ecs_cluster_capacity_providers" "this" {
   cluster_name       = aws_ecs_cluster.dify.name
   capacity_providers = ["FARGATE", "FARGATE_SPOT"]
@@ -965,7 +993,7 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 # ECS Service
 
 resource "aws_ecs_service" "api" {
-  depends_on      = [aws_lb_listener_rule.api] # ターゲットグループが ALB と紐付いていないとエラーになる
+  depends_on      = [aws_lb_listener_rule.api] # ターゲットグループが ALB と紐付いていないと構築時にエラーになる
   name            = "dify-api"
   cluster         = aws_ecs_cluster.dify.name
   desired_count   = var.api_desired_count
