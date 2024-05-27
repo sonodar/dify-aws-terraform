@@ -79,3 +79,16 @@ variable "allowed_cidr_blocks" {
   default = []
 }
 
+# Service
+
+variable "api_desired_count" {
+  default = 1
+}
+
+variable "worker_desired_count" {
+  default = 1
+}
+
+variable "web_desired_count" {
+  default = 1
+}

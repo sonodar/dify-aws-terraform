@@ -16,6 +16,7 @@ vpc_id             = "vpc-xxxxxxxxxxxxxxxxxx"
 private_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
 public_subnet_ids  = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
 
+redis_password     = "openssl rand -base64 21"
 db_master_password = "openssl rand -base64 21"
 
 # Dify environment

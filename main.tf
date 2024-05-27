@@ -32,13 +32,14 @@ resource "aws_security_group" "redis" {
 
 resource "aws_elasticache_subnet_group" "redis" {
   name        = "dify-redis"
-  description = "Redis cluster for Dify"
+  description = "Redis for Dify"
   subnet_ids  = var.private_subnet_ids
 }
 
+# MOVED エラーが発生するのでクラスターモードは使わない
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id = "dify"
-  description          = "Redis cluster for Dify"
+  description          = "Redis for Dify"
 
   engine         = "redis"
   engine_version = "7.1"
@@ -55,15 +56,27 @@ resource "aws_elasticache_replication_group" "redis" {
   auth_token_update_strategy = "SET"
   auth_token                 = var.redis_password
 
+  # REDIS_PASSWORD='put your redis password'
+  # aws elasticache modify-replication-group \
+  # --replication-group-id dify \
+  # --auth-token ${REDIS_PASSWORD} \
+  # --auth-token-update-strategy ROTATE \
+  # --apply-immediately
+  # aws elasticache modify-replication-group \
+  # --replication-group-id dify \
+  # --auth-token ${REDIS_PASSWORD} \
+  # --auth-token-update-strategy SET \
+  # --apply-immediately
+
   maintenance_window       = "sat:18:00-sat:19:00"
   snapshot_window          = "20:00-21:00"
   snapshot_retention_limit = 1
 
-  parameter_group_name       = "default.redis7.cluster.on"
-  automatic_failover_enabled = true
-  multi_az_enabled           = true
-  num_node_groups            = 1
-  replicas_per_node_group    = 1
+  parameter_group_name = "default.redis7"
+
+  lifecycle {
+    ignore_changes = [auth_token]
+  }
 }
 
 # Database
@@ -166,7 +179,7 @@ data "aws_iam_policy_document" "ecs_task" {
 
 data "aws_iam_policy_document" "get_secret" {
   statement {
-    actions   = ["ssm:GetParameter"]
+    actions   = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = ["arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/*"]
   }
 }
@@ -277,9 +290,9 @@ resource "aws_ssm_parameter" "redis_url" {
   depends_on = [aws_elasticache_replication_group.redis]
   type       = "SecureString"
   name       = "${local.ssm_parameter_prefix}/REDIS_URL"
-  value      = "rediss://:${var.redis_password}@${aws_elasticache_replication_group.redis.configuration_endpoint_address}:6379/1"
+  value      = "rediss://:${var.redis_password}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0" # ElastiCache Redis では db0 以外使えない
   lifecycle {
-    ignore_changes = [value]
+    # ignore_changes = [value]
   }
 }
 
@@ -334,11 +347,10 @@ resource "aws_ecs_task_definition" "dify_api" {
         {
           sourceVolume  = "dependencies"
           containerPath = "/dependencies"
-          readOnly      = false
         }
       ]
       entryPoint = ["sh", "-c"]
-      command    = ["touch /dependencies/python-requirements.txt"]
+      command    = ["touch /dependencies/python-requirements.txt && chmod 755 /dependencies/python-requirements.txt"]
     },
     {
       name      = "dify-sandbox"
@@ -348,7 +360,6 @@ resource "aws_ecs_task_definition" "dify_api" {
         {
           sourceVolume  = "dependencies"
           containerPath = "/dependencies"
-          readOnly      = true
         }
       ]
       portMappings = [
@@ -381,7 +392,6 @@ resource "aws_ecs_task_definition" "dify_api" {
       }
       cpu         = 0
       volumesFrom = []
-      mountPoints = []
     },
     {
       name      = "dify-api"
@@ -402,6 +412,19 @@ resource "aws_ecs_task_definition" "dify_api" {
           LOG_LEVEL = "INFO"
           # enable DEBUG mode to output more logs
           # DEBUG  = "true"
+          # The base URL of console application web frontend, refers to the Console base URL of WEB service if console domain is
+          # different from api or web app domain.
+          # example: http://cloud.dify.ai
+          CONSOLE_WEB_URL = "http://${aws_lb.dify.dns_name}"
+          # The base URL of console application api server, refers to the Console base URL of WEB service if console domain is different from api or web app domain.
+          # example: http://cloud.dify.ai
+          CONSOLE_API_URL = "http://${aws_lb.dify.dns_name}"
+          # The URL prefix for Service API endpoints, refers to the base URL of the current API service if api domain is different from console domain.
+          # example: http://api.dify.ai
+          SERVICE_API_URL = "http://${aws_lb.dify.dns_name}"
+          # The URL prefix for Web APP frontend, refers to the Web App base URL of WEB service if web app domain is different from console or api domain.
+          # example: http://udify.app
+          APP_WEB_URL = "http://${aws_lb.dify.dns_name}"
           # When enabled, migrations will be executed prior to application startup and the application will start after the migrations have completed.
           MIGRATION_ENABLED = var.migration_enabled
           # The configurations of postgres database connection.
@@ -412,7 +435,7 @@ resource "aws_ecs_task_definition" "dify_api" {
           DB_DATABASE = var.dify_db_name
           # The configurations of redis connection.
           # It is consistent with the configuration in the 'redis' service below.
-          REDIS_HOST    = aws_elasticache_replication_group.redis.configuration_endpoint_address
+          REDIS_HOST    = aws_elasticache_replication_group.redis.primary_endpoint_address
           REDIS_PORT    = aws_elasticache_replication_group.redis.port
           REDIS_USE_SSL = "true"
           # use redis db 0 for redis cache
@@ -502,6 +525,13 @@ resource "aws_ecs_task_definition" "dify_api" {
           "awslogs-stream-prefix" = "dify-api"
         }
       }
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -f http://localhost:5001/health || exit 1"]
+        interval    = 10
+        timeout     = 5
+        retries     = 3
+        startPeriod = 30
+      }
       cpu         = 0
       volumesFrom = []
       mountPoints = []
@@ -561,8 +591,8 @@ resource "aws_security_group_rule" "api_to_redis" {
   type                     = "ingress"
   description              = "API to Redis"
   protocol                 = "tcp"
-  from_port                = 5432
-  to_port                  = 5432
+  from_port                = 6379
+  to_port                  = 6379
   source_security_group_id = aws_security_group.api.id
 }
 
@@ -598,7 +628,7 @@ resource "aws_ecs_task_definition" "dify_worker" {
           DB_PORT     = aws_rds_cluster.dify.port
           DB_DATABASE = var.dify_db_name
           # The configurations of redis cache connection.
-          REDIS_HOST    = aws_elasticache_replication_group.redis.configuration_endpoint_address
+          REDIS_HOST    = aws_elasticache_replication_group.redis.primary_endpoint_address
           REDIS_PORT    = aws_elasticache_replication_group.redis.port
           REDIS_DB      = "0"
           REDIS_USE_SSL = "true"
@@ -707,8 +737,8 @@ resource "aws_security_group_rule" "worker_to_redis" {
   type                     = "ingress"
   description              = "Worker to Redis"
   protocol                 = "tcp"
-  from_port                = 5432
-  to_port                  = 5432
+  from_port                = 6379
+  to_port                  = 6379
   source_security_group_id = aws_security_group.worker.id
 }
 
@@ -738,6 +768,18 @@ resource "aws_ecs_task_definition" "dify_web" {
       name      = "dify-web"
       image     = "langgenius/dify-web:${var.dify_web_version}"
       essential = true
+      environment = [
+        for name, value in {
+          # The base URL of console application api server, refers to the Console base URL of WEB service if console domain is
+          # different from api or web app domain.
+          # example: http://cloud.dify.ai
+          CONSOLE_API_URL = "http://${aws_lb.dify.dns_name}"
+          # # The URL for Web APP api server, refers to the Web App base URL of WEB service if web app domain is different from
+          # # console or api domain.
+          # # example: http://udify.app
+          APP_API_URL = "http://${aws_lb.dify.dns_name}"
+        } : { name = name, value = tostring(value) }
+      ]
       portMappings = [
         {
           hostPort      = 3000
@@ -776,6 +818,16 @@ resource "aws_security_group" "web" {
   tags        = { Name = "dify-web" }
 }
 
+resource "aws_security_group_rule" "web_to_internet" {
+  security_group_id = aws_security_group.web.id
+  type              = "egress"
+  description       = "Web to Internet"
+  protocol          = "all"
+  from_port         = 0
+  to_port           = 0
+  cidr_blocks       = ["0.0.0.0/0"]
+}
+
 resource "aws_security_group_rule" "alb_to_web" {
   security_group_id        = aws_security_group.web.id
   type                     = "ingress"
@@ -793,6 +845,16 @@ resource "aws_security_group" "alb" {
   description = "ALB (Reverse Proxy) for Dify"
   vpc_id      = var.vpc_id
   tags        = { Name = "dify-alb" }
+}
+
+resource "aws_security_group_rule" "alb_to_internet" {
+  security_group_id = aws_security_group.alb.id
+  type              = "egress"
+  description       = "ALB to Internet"
+  protocol          = "all"
+  from_port         = 0
+  to_port           = 0
+  cidr_blocks       = ["0.0.0.0/0"]
 }
 
 resource "aws_security_group_rule" "http_from_internet" {
@@ -825,11 +887,11 @@ resource "aws_lb_target_group" "web" {
   deregistration_delay = 65
 
   health_check {
-    path                = "/"
-    interval            = 10
-    timeout             = 5
-    healthy_threshold   = 3
-    unhealthy_threshold = 5
+    path     = "/apps"
+    interval = 10
+    # timeout             = 5
+    # healthy_threshold   = 3
+    # unhealthy_threshold = 5
   }
 }
 
@@ -878,11 +940,11 @@ resource "aws_lb_target_group" "api" {
   deregistration_delay = 65
 
   health_check {
-    path                = "/health"
-    interval            = 10
-    timeout             = 5
-    healthy_threshold   = 3
-    unhealthy_threshold = 5
+    path     = "/health"
+    interval = 10
+    # timeout             = 5
+    # healthy_threshold   = 3
+    # unhealthy_threshold = 5
   }
 }
 
@@ -906,7 +968,7 @@ resource "aws_ecs_service" "api" {
   depends_on      = [aws_lb_listener_rule.api] # ターゲットグループが ALB と紐付いていないとエラーになる
   name            = "dify-api"
   cluster         = aws_ecs_cluster.dify.name
-  desired_count   = 0 # TODO: variable
+  desired_count   = var.api_desired_count
   task_definition = aws_ecs_task_definition.dify_api.arn
   propagate_tags  = "SERVICE"
   launch_type     = "FARGATE"
@@ -921,50 +983,38 @@ resource "aws_ecs_service" "api" {
     container_name   = "dify-api"
     container_port   = 5001
   }
-
-  lifecycle {
-    ignore_changes = [desired_count]
-  }
 }
 
 resource "aws_ecs_service" "worker" {
   name            = "dify-worker"
   cluster         = aws_ecs_cluster.dify.name
-  desired_count   = 0 # TODO: variable
+  desired_count   = var.worker_desired_count
   task_definition = aws_ecs_task_definition.dify_worker.arn
   propagate_tags  = "SERVICE"
   launch_type     = "FARGATE"
 
   network_configuration {
     subnets         = var.private_subnet_ids
-    security_groups = [aws_security_group.api.id]
-  }
-
-  lifecycle {
-    ignore_changes = [desired_count]
+    security_groups = [aws_security_group.worker.id]
   }
 }
 
 resource "aws_ecs_service" "web" {
   name            = "dify-web"
   cluster         = aws_ecs_cluster.dify.name
-  desired_count   = 0 # TODO: variable
+  desired_count   = var.web_desired_count
   task_definition = aws_ecs_task_definition.dify_web.arn
   propagate_tags  = "SERVICE"
   launch_type     = "FARGATE"
 
   network_configuration {
     subnets         = var.private_subnet_ids
-    security_groups = [aws_security_group.api.id]
+    security_groups = [aws_security_group.web.id]
   }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.web.arn
     container_name   = "dify-web"
     container_port   = 3000
-  }
-
-  lifecycle {
-    ignore_changes = [desired_count]
   }
 }
