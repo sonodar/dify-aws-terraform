@@ -315,6 +315,13 @@ data "aws_iam_policy_document" "storage" {
   }
 }
 
+data "aws_iam_policy_document" "bedrock" {
+  statement {
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:*::foundation-model/*"]
+  }
+}
+
 resource "aws_iam_role" "app" {
   name               = "dify-app-task-role"
   description        = "Task Role for Dify API, Worker and Sandbox"
@@ -328,6 +335,11 @@ resource "aws_iam_role_policy" "s3_storage" {
   role   = aws_iam_role.app.id
   name   = "s3-storage"
   policy = data.aws_iam_policy_document.storage.json
+}
+resource "aws_iam_role_policy" "bedrock" {
+  role   = aws_iam_role.app.id
+  name   = "invoke-bedrock-model"
+  policy = data.aws_iam_policy_document.bedrock.json
 }
 
 # Dify API (with Sandbox) Task
