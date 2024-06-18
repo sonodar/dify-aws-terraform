@@ -411,8 +411,9 @@ resource "aws_ecs_task_definition" "dify_api" {
           # The type of storage to use for storing user files. Supported values are `local` and `s3` and `azure-blob` and `google-storage`, Default = `local`
           STORAGE_TYPE = "s3"
           # The S3 storage configurations, only available when STORAGE_TYPE is `s3`.
-          S3_BUCKET_NAME = aws_s3_bucket.storage.bucket
-          S3_REGION      = var.aws_region
+          S3_USE_AWS_MANAGED_IAM = true
+          S3_BUCKET_NAME         = aws_s3_bucket.storage.bucket
+          S3_REGION              = var.aws_region
           # The type of vector store to use. Supported values are `weaviate`, `qdrant`, `milvus`, `relyt`.
           VECTOR_STORE = "pgvector"
           # pgvector configurations
@@ -527,6 +528,7 @@ resource "aws_ecs_task_definition" "dify_api" {
           GIN_MODE       = "release"
           WORKER_TIMEOUT = 15
           ENABLE_NETWORK = true
+          SANDBOX_PORT   = 8194
         } : { name = name, value = tostring(value) }
       ]
       secrets = [
@@ -646,8 +648,9 @@ resource "aws_ecs_task_definition" "dify_worker" {
           # The type of storage to use for storing user files. Supported values are `local` and `s3` and `azure-blob` and `google-storage`, Default = `local`
           STORAGE_TYPE = "s3"
           # The S3 storage configurations, only available when STORAGE_TYPE is `s3`.
-          S3_BUCKET_NAME = aws_s3_bucket.storage.bucket
-          S3_REGION      = var.aws_region
+          S3_USE_AWS_MANAGED_IAM = true
+          S3_BUCKET_NAME         = aws_s3_bucket.storage.bucket
+          S3_REGION              = var.aws_region
           # The type of vector store to use. Supported values are `weaviate`, `qdrant`, `milvus`, `relyt`, `pgvector`.
           VECTOR_STORE = "pgvector"
           # pgvector configurations
@@ -864,7 +867,7 @@ resource "aws_security_group_rule" "alb_to_targetgroup" {
   security_group_id = aws_security_group.alb.id
   type              = "egress"
   description       = "ALB to TargetGroup"
-  protocol          = "tcp"
+  protocol          = "all"
   from_port         = 0
   to_port           = 0
   cidr_blocks       = [data.aws_vpc.this.cidr_block]

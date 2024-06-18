@@ -21,9 +21,18 @@ Terraform template for Dify on AWS
 3. Edit `backend.tf` to set your S3 bucket and DynamoDB table
 4. Run `terraform init`
 5. Run `terraform plan`
-6. Run `terraform apply -target aws_elasticache_subnet_group.redis`
-7. Run `terraform apply -target aws_rds_cluster_instance.dify`
-8. Run `terraform apply -target aws_lb_listener_rule.api`
-9. Run `terraform apply`
+6. Run `terraform apply -target aws_rds_cluster_instance.dify`
+7. Execute the following SQL in the RDS cluster
+
+    ```sql
+    CREATE ROLE dify WITH LOGIN PASSWORD 'your-password';
+    GRANT dify TO postgres;
+    CREATE DATABASE dify WITH OWNER dify;
+    \c dify
+    CREATE EXTENSION vector;
+    ```
+
+8. Run `terraform apply`
+9. Run `terraform apply` again, if task is not started
 
 構築が完了し、ECS タスクがすべて起動したら Output の `dify_url` にアクセスしてください。
