@@ -502,7 +502,7 @@ resource "aws_ecs_task_definition" "dify_api" {
       volumesFrom = []
       mountPoints = []
     },
-    // `dify-sandbox:0.2.0` では `/dependencies/python-requirements.txt` が存在しないと起動時エラーになる。
+    // `dify-sandbox:0.2.6` では `/dependencies/python-requirements.txt` が存在しないと起動時エラーになる。
     // そのため、簡易的ではあるが volume を利用して sandbox から見れるファイルを作成する。
     {
       name      = "dify-sandbox-dependencies"
@@ -804,6 +804,7 @@ resource "aws_ecs_task_definition" "dify_web" {
           # # console or api domain.
           # # example: http://udify.app
           APP_API_URL = "http://${aws_lb.dify.dns_name}"
+          NEXT_TELEMETRY_DISABLED = "0"
         } : { name = name, value = tostring(value) }
       ]
       portMappings = [
