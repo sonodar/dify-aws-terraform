@@ -12,16 +12,7 @@ variable "dify_storage_bucket" {
   description = "s3 bucket name for dify storage"
 }
 
-# VPC
-
-variable "vpc_id" {
-}
-variable "private_subnet_ids" {
-  type = list(string)
-}
-variable "public_subnet_ids" {
-  type = list(string)
-}
+# VPC – networking is now managed in vpc.tf; IDs are exposed via locals.
 
 # Redis
 
@@ -46,15 +37,19 @@ variable "db_master_password" {
 # Dify environment
 
 variable "dify_api_version" {
-  default = "0.7.3"
+  default = "1.13.0"
 }
 
 variable "dify_web_version" {
-  default = "0.7.3"
+  default = "1.13.0"
 }
 
 variable "dify_sandbox_version" {
-  default = "0.2.6"
+  default = "0.2.12"
+}
+
+variable "dify_plugin_daemon_version" {
+  default = "0.5.3-local"
 }
 
 variable "migration_enabled" {
@@ -75,8 +70,9 @@ variable "dify_db_name" {
 # ALB
 
 variable "allowed_cidr_blocks" {
-  type    = list(string)
-  default = []
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  description = "CIDR blocks allowed to reach the ALB on HTTP (e.g. [\"1.2.3.4/32\"] to restrict). Default allows all."
 }
 
 # Service
@@ -90,5 +86,13 @@ variable "worker_desired_count" {
 }
 
 variable "web_desired_count" {
+  default = 1
+}
+
+variable "plugin_daemon_desired_count" {
+  default = 1
+}
+
+variable "sandbox_desired_count" {
   default = 1
 }

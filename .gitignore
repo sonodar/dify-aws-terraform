@@ -36,3 +36,8 @@ terraform.rc
 # local file
 .terraform.lock.hcl
 backend.tf
+
+
+*.tfplan
+*-plan.txt
+plans/*

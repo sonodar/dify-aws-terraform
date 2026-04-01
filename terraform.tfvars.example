@@ -16,9 +16,9 @@ vpc_id             = "vpc-xxxxxxxxxxxxxxxxxx"
 private_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
 public_subnet_ids  = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-xxxxxxxxxxxxxxxxx"]
 
-redis_password     = "openssl rand -base64 21"
-db_master_password = "openssl rand -base64 21"
+redis_password     = "openssl rand -hex 32"
+db_master_password = "openssl rand -hex 32"
 
 # Dify environment
 migration_enabled = "true" # only first time
-dify_db_password  = "openssl rand -base64 21"
+dify_db_password  = "openssl rand -hex 32"
